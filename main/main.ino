@@ -5,10 +5,6 @@
 #include "soc/soc.h"          // Disable brownour problems
 #include "soc/rtc_cntl_reg.h" // Disable brownour problems
 #include "driver/rtc_io.h"
-#include <EEPROM.h> // read and write from flash memory
-
-// define the number of bytes you want to access
-#define EEPROM_SIZE 1
 
 // Pin definition for CAMERA_MODEL_AI_THINKER
 #define PWDN_GPIO_NUM 32
@@ -28,6 +24,8 @@
 #define VSYNC_GPIO_NUM 25
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
+
+const char * countPath = "/camSettings/picIndex.txt";
 
 void configESPCamera()
 {
@@ -113,16 +111,17 @@ void initMicroSDCard()
     Serial.println("No MicroSD Card found");
     return;
   }
+  fs::FS &fs = SD_MMC;
 }
 
 class TouchSensor {
   public:
-    int threshold;
+    byte threshold;
     byte PIN;
     bool touchFlag = false;
     bool checkTouchFlag = false;  // for comparing with touchFlag
 
-    TouchSensor(byte GPIO_PIN,int senseThreshold){
+    TouchSensor(byte GPIO_PIN,byte senseThreshold){
       threshold = senseThreshold;
       PIN = GPIO_PIN;
     }
@@ -151,33 +150,74 @@ class TouchSensor {
     }
 };
 
-class EEPROMCount {
-  public:
-    int readAddr;
-    int count;
-    EEPROMCount(){
-    // Store bytes address in the first eeprom byte address 0x0
-      readAddr = EEPROM.read(0);
-    }
+void printFile(const char * path, int message){
+  fs::FS &fs = SD_MMC;
+  Serial.println(3);
 
-    int retrieveCount()
-    {
-      // if  the address is full  or  the address to be read is 0 (only if somehow eeprom is erased so it will read itself)
-      if (EEPROM.read(readAddr) == 256 || readAddr == 0){
-        readAddr++;
-        EEPROM.write(0,readAddr);
-        EEPROM.commit();
-      }
-      for (int i = 1; i <= readAddr; i++){
-        count += EEPROM.read(i);
-      }
-      return count;
+  File file = fs.open(path, FILE_WRITE);
+  if(!file){
+    Serial.println("Failed to open file for writing");
+    return;
   }
-    void setNextCount(){
-      count++;
-      EEPROM.write(readAddr,count);
+  Serial.println(4);
+  file.print(message);
+  Serial.println(5);
+  file.close();
+  Serial.println(6);
+}
+
+String readFile(const char * path){
+  fs::FS &fs = SD_MMC;
+  File file = fs.open(path);
+  if(!file){
+    Serial.println("Failed to open file for reading");
   }
-};
+
+  String temp = "";
+  while(file.available()){
+    temp += (char)file.read();
+  }
+  file.close();
+  return temp;;
+}
+
+void takeNewPhoto(){
+
+  // Path where new picture will be saved in SD Card
+  String count = readFile(countPath);
+  String path = "/image" + count + ".jpg";
+  Serial.printf("Picture file name: %s\n", path.c_str());
+
+  // Save picture to microSD card
+  fs::FS &fs = SD_MMC;
+  File file = fs.open(path.c_str(), FILE_WRITE);
+  if (!file){
+    Serial.println("Failed to open file in write mode");
+    return;
+  }
+
+  // Setup frame buffer
+  camera_fb_t *fb = esp_camera_fb_get();
+
+  if (!fb){
+    Serial.println("Camera capture failed");
+    return;
+  }
+
+  file.write(fb->buf, fb->len); // payload (image), payload length
+  Serial.printf("Saved file to path: %s\n", path.c_str());
+  // Close the file
+  file.close();
+  Serial.println(1);
+
+  // Return the frame buffer back to the driver for reuse
+  esp_camera_fb_return(fb);
+  Serial.println(2);
+
+  // Update picture number counter
+  printFile(countPath,count.toInt() + 1);
+  Serial.println(7);
+}
 
 void camCalibrate(){
   Serial.println("Cabbing...");
@@ -219,65 +259,23 @@ void setup()
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
-  // initialize EEPROM with predefined size
-  EEPROM.begin(8);
-
-
-
-//  delay(6000);
-  // Serial.println("Entering sleep mode");
-  // delay(1000);
-
-  // // Enter deep sleep mode
-  // esp_deep_sleep_start();
-
   camCalibrate();
+
+  delay(1000);
+
+  takeNewPhoto();
 
   //while (true){;}
 }
 
-touch_pad_t touchPin;
-TouchSensor camButton(12, 30);
-EEPROMCount pictureCount;
+
+// only pin 14 works, pin 12 is always 0 when sd card is inserted
+TouchSensor camButton(14, 10);
 
 void loop()
 {
-  if (camButton.just_pressed()){
+   if (camButton.just_pressed()){
     takeNewPhoto();
-  }
+   }
+  delay(1);
 }
-
-void takeNewPhoto(){
-
-  // Path where new picture will be saved in SD Card
-  String path = "/image" + String(pictureCount.retrieveCount()) + ".jpg";
-  Serial.printf("Picture file name: %s\n", path.c_str());
-
-  // Save picture to microSD card
-  fs::FS &fs = SD_MMC;
-  File file = fs.open(path.c_str(), FILE_WRITE);
-  if (!file){
-    Serial.println("Failed to open file in write mode");
-    return;
-  }
-
-  // Setup frame buffer
-  camera_fb_t *fb = esp_camera_fb_get();
-
-  if (!fb){
-    Serial.println("Camera capture failed");
-    return;
-  }
-
-  file.write(fb->buf, fb->len); // payload (image), payload length
-  Serial.printf("Saved file to path: %s\n", path.c_str());
-  // Close the file
-  file.close();
-
-  // Return the frame buffer back to the driver for reuse
-  esp_camera_fb_return(fb);
-
-  // Update EEPROM picture number counter
-  pictureCount.setNextCount();
-}
-
