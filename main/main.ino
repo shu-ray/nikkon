@@ -25,6 +25,13 @@
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
 
+
+byte touchPin = 14;
+byte touchThreshold = 25;
+
+// placeholder callback function
+void callback(){}
+
 const char * countPath = "/camSettings/picIndex.txt";
 
 void configESPCamera()
@@ -111,7 +118,6 @@ void initMicroSDCard()
     Serial.println("No MicroSD Card found");
     return;
   }
-  fs::FS &fs = SD_MMC;
 }
 
 class TouchSensor {
@@ -219,6 +225,7 @@ void takeNewPhoto(){
   Serial.println(7);
 }
 
+// the camera require few image capture to calibrate exposure etc
 void camCalibrate(){
   Serial.println("Cabbing...");
   byte count = 0;
@@ -259,23 +266,29 @@ void setup()
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
-  camCalibrate();
+  printFile(countPath,1);
 
-  delay(1000);
+  camCalibrate();
+  //Setup interrupt on GPIO14
+  touchAttachInterrupt(touchPin, callback, touchThreshold);
+
+  //Configure Touchpad as wakeup source
+  esp_sleep_enable_touchpad_wakeup();
 
   takeNewPhoto();
 
-  //while (true){;}
 }
 
-
 // only pin 14 works, pin 12 is always 0 when sd card is inserted
-TouchSensor camButton(14, 10);
+//TouchSensor camButton(14, 10);
 
 void loop()
 {
-   if (camButton.just_pressed()){
-    takeNewPhoto();
-   }
-  delay(1);
+  takeNewPhoto();
+
+  // Do nothing if the configured interrupt touch is still pressed from last wakeup to avoid more than 1 picture taken per press
+  while (touchRead(touchPin) > touchThreshold){
+    delay(8);
+  }
+  esp_light_sleep_start();
 }
