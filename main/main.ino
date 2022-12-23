@@ -25,14 +25,9 @@
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
 
-
-byte touchPin = 14;
-byte touchThreshold = 25;
-
-// placeholder callback function
-void callback(){}
-
 const char * countPath = "/camSettings/picIndex.txt";
+
+const byte wakeupPin = 12;
 
 void configESPCamera()
 {
@@ -119,42 +114,6 @@ void initMicroSDCard()
     return;
   }
 }
-
-class TouchSensor {
-  public:
-    byte threshold;
-    byte PIN;
-    bool touchFlag = false;
-    bool checkTouchFlag = false;  // for comparing with touchFlag
-
-    TouchSensor(byte GPIO_PIN,byte senseThreshold){
-      threshold = senseThreshold;
-      PIN = GPIO_PIN;
-    }
-
-    bool pressing(){
-      if (touchRead(PIN) < threshold){
-        touchFlag = true;
-        return true;
-        }
-        touchFlag = false;
-        return false;
-    }
-    bool just_pressed(){
-      checkTouchFlag = touchFlag;
-      if (checkTouchFlag != pressing() && checkTouchFlag == false){  // pressing() is called first thus touchFlag is changed to true in pressing()
-        return true;
-      }
-      return false;
-    }
-    bool just_released(){
-      checkTouchFlag = touchFlag;
-      if (checkTouchFlag != pressing() && checkTouchFlag == true){
-        return true;
-      }
-      return false;
-    }
-};
 
 void printFile(const char * path, int message){
   fs::FS &fs = SD_MMC;
@@ -262,33 +221,27 @@ void setup()
   configESPCamera();
   Serial.println("Camera OK!");
 
+  camCalibrate();
+
   // Initialize the MicroSD
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
-  printFile(countPath,1);
+  pinMode(wakeupPin,INPUT_PULLUP);
 
-  camCalibrate();
-  //Setup interrupt on GPIO14
-  touchAttachInterrupt(touchPin, callback, touchThreshold);
-
-  //Configure Touchpad as wakeup source
-  esp_sleep_enable_touchpad_wakeup();
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_12,0);
 
   takeNewPhoto();
-
 }
-
-// only pin 14 works, pin 12 is always 0 when sd card is inserted
-//TouchSensor camButton(14, 10);
 
 void loop()
 {
+  esp_light_sleep_start();
+  Serial.println("takin new pic");
   takeNewPhoto();
 
   // Do nothing if the configured interrupt touch is still pressed from last wakeup to avoid more than 1 picture taken per press
-  while (touchRead(touchPin) > touchThreshold){
-    delay(8);
+  while (digitalRead(wakeupPin) == LOW){
+    delay(80);
   }
-  esp_light_sleep_start();
 }
