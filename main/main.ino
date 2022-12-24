@@ -92,7 +92,7 @@ void configESPCamera()
   s->set_raw_gma(s, 1);                    // 0 = disable , 1 = enable
   s->set_lenc(s, 1);                       // 0 = disable , 1 = enable
   s->set_hmirror(s, 0);                    // 0 = disable , 1 = enable
-  s->set_vflip(s, 1);                      // 0 = disable , 1 = enable
+  s->set_vflip(s, 0);                      // 0 = disable , 1 = enable
   s->set_dcw(s, 1);                        // 0 = disable , 1 = enable
   s->set_colorbar(s, 0);                   // 0 = disable , 1 = enable
 }
@@ -117,18 +117,13 @@ void initMicroSDCard()
 
 void printFile(const char * path, int message){
   fs::FS &fs = SD_MMC;
-  Serial.println(3);
-
   File file = fs.open(path, FILE_WRITE);
   if(!file){
     Serial.println("Failed to open file for writing");
     return;
   }
-  Serial.println(4);
   file.print(message);
-  Serial.println(5);
   file.close();
-  Serial.println(6);
 }
 
 String readFile(const char * path){
@@ -151,7 +146,6 @@ void takeNewPhoto(){
   // Path where new picture will be saved in SD Card
   String count = readFile(countPath);
   String path = "/image" + count + ".jpg";
-  Serial.printf("Picture file name: %s\n", path.c_str());
 
   // Save picture to microSD card
   fs::FS &fs = SD_MMC;
@@ -170,18 +164,17 @@ void takeNewPhoto(){
   }
 
   file.write(fb->buf, fb->len); // payload (image), payload length
-  Serial.printf("Saved file to path: %s\n", path.c_str());
-  // Close the file
+  // Close the file when done
+  delay(200);
   file.close();
-  Serial.println(1);
 
   // Return the frame buffer back to the driver for reuse
   esp_camera_fb_return(fb);
-  Serial.println(2);
-
   // Update picture number counter
   printFile(countPath,count.toInt() + 1);
-  Serial.println(7);
+
+  Serial.printf("Saved file to path: %s\n", path.c_str());
+  delay(200);
 }
 
 // the camera require few image capture to calibrate exposure etc
@@ -228,20 +221,20 @@ void setup()
   initMicroSDCard();
 
   pinMode(wakeupPin,INPUT_PULLUP);
-
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_12,0);
 
-  takeNewPhoto();
 }
 
 void loop()
 {
   esp_light_sleep_start();
   Serial.println("takin new pic");
-  takeNewPhoto();
+  for (byte i = 0;i < 3;i++){
+    takeNewPhoto();
+  }
 
-  // Do nothing if the configured interrupt touch is still pressed from last wakeup to avoid more than 1 picture taken per press
+  // Do nothing if the configured wakeup button is still pressed to avoid more than 1 picture taken per press
   while (digitalRead(wakeupPin) == LOW){
-    delay(80);
+    delay(80);    // debounce
   }
 }
