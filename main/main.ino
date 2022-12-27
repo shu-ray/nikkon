@@ -184,7 +184,7 @@ void camCalibrate(){
   unsigned long now = millis();
   while (now < 6000){
     now = millis();
-    if (now % 100 == 0){
+    if (now % 120 == 0){
       count++;
       camera_fb_t *fb = esp_camera_fb_get();
       delayMicroseconds(500);
@@ -220,8 +220,10 @@ void setup()
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
-  pinMode(wakeupPin,INPUT_PULLUP);
-  esp_sleep_enable_ext0_wakeup(GPIO_NUM_12,0);
+  // pinMode(wakeupPin,INPUT_PULLUP);
+  // esp_sleep_enable_ext0_wakeup(GPIO_NUM_12,0);
+  esp_sleep_enable_timer_wakeup(1 * 1000000ULL);
+
 
 }
 
@@ -230,11 +232,18 @@ void loop()
   esp_light_sleep_start();
   Serial.println("takin new pic");
   for (byte i = 0;i < 3;i++){
-    takeNewPhoto();
+    camera_fb_t *fb = esp_camera_fb_get();
+    delay(1);
+    esp_camera_fb_return(fb);      
+    delay(120);
   }
 
+  takeNewPhoto();
+
   // Do nothing if the configured wakeup button is still pressed to avoid more than 1 picture taken per press
-  while (digitalRead(wakeupPin) == LOW){
-    delay(80);    // debounce
-  }
+  // while (digitalRead(wakeupPin) == LOW){
+  //   delay(80);    // debounce
+  // }
+
+  
 }
