@@ -28,6 +28,9 @@
 const char * countPath = "/camSettings/picIndex.txt";
 
 const byte wakeupPin = 12;
+const byte flashSwitch = 13;
+const byte flashPin = 4;
+const byte buttonPin = 12;
 
 void configESPCamera()
 {
@@ -72,7 +75,7 @@ void configESPCamera()
   sensor_t *s = esp_camera_sensor_get();
 
   s->set_framesize(s, FRAMESIZE_UXGA);     // FRAMESIZE_[QQVGA|HQVGA|QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA|QXGA(ov3660)]);
-  s->set_quality(s, 10);                   // 10 to 63
+  s->set_quality(s, 8);                   // 10 to 63
   s->set_brightness(s, 0);                 // -2 to 2
   s->set_contrast(s, 0);                   // -2 to 2
   s->set_saturation(s, 0);                 // -2 to 2
@@ -146,7 +149,7 @@ void takeNewPhoto(){
   // Path where new picture will be saved in SD Card
   String count = readFile(countPath);
   String path = "/image" + count + ".jpg";
-
+  
   // Save picture to microSD card
   fs::FS &fs = SD_MMC;
   File file = fs.open(path.c_str(), FILE_WRITE);
@@ -155,31 +158,37 @@ void takeNewPhoto(){
     return;
   }
 
+  // if (digitalRead(flashSwitch) == LOW){
+  //   digitalWrite(flashPin,HIGH);
+  // }
+
+
   // Setup frame buffer
   camera_fb_t *fb = esp_camera_fb_get();
 
   if (!fb){
     Serial.println("Camera capture failed");
+//    digitalWrite(flashPin,LOW);
     return;
   }
 
+  Serial.println("saving...");
   file.write(fb->buf, fb->len); // payload (image), payload length
   // Close the file when done
-  delay(200);
   file.close();
 
   // Return the frame buffer back to the driver for reuse
   esp_camera_fb_return(fb);
+  //digitalWrite(flashPin,LOW);
   // Update picture number counter
   printFile(countPath,count.toInt() + 1);
 
   Serial.printf("Saved file to path: %s\n", path.c_str());
-  delay(200);
 }
 
 // the camera require few image capture to calibrate exposure etc
 void camCalibrate(){
-  Serial.println("Cabbing...");
+  Serial.println("Calibrating...");
   byte count = 0;
   unsigned long now = millis();
   while (now < 6000){
@@ -187,7 +196,7 @@ void camCalibrate(){
     if (now % 120 == 0){
       count++;
       camera_fb_t *fb = esp_camera_fb_get();
-      delayMicroseconds(500);
+      //delayMicroseconds(500);
       if (!fb){
         Serial.println("Cab failed");
         return;
@@ -196,7 +205,8 @@ void camCalibrate(){
       esp_camera_fb_return(fb);      
       Serial.print(count);
     }
-    delayMicroseconds(500);
+    //delayMicroseconds(500);
+    delay(1);
   }
   Serial.println("\nCab done");
 }
@@ -216,34 +226,44 @@ void setup()
 
   camCalibrate();
 
+
   // Initialize the MicroSD
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
+  pinMode(buttonPin,INPUT_PULLUP);
   // pinMode(wakeupPin,INPUT_PULLUP);
   // esp_sleep_enable_ext0_wakeup(GPIO_NUM_12,0);
-  esp_sleep_enable_timer_wakeup(1 * 1000000ULL);
+  //esp_sleep_enable_timer_wakeup(1 * 1000000ULL);
 
 
 }
 
+bool buttonState = HIGH;
+bool lastButtonState = HIGH;
+
 void loop()
 {
-  esp_light_sleep_start();
-  Serial.println("takin new pic");
-  for (byte i = 0;i < 3;i++){
-    camera_fb_t *fb = esp_camera_fb_get();
-    delay(1);
-    esp_camera_fb_return(fb);      
-    delay(120);
+  //esp_light_sleep_start();
+  // for (byte i = 0;i < 3;i++){
+  //   camera_fb_t *fb = esp_camera_fb_get();
+  //   delay(1);
+  //   esp_camera_fb_return(fb);      
+  //   delay(120);
+  // }
+  buttonState = digitalRead(buttonPin);
+  if (buttonState != lastButtonState){
+    if (lastButtonState == HIGH){
+      Serial.println("takin new pic");
+      takeNewPhoto();
+    }
+    lastButtonState = buttonState;
   }
+  delay(100);
 
-  takeNewPhoto();
 
   // Do nothing if the configured wakeup button is still pressed to avoid more than 1 picture taken per press
   // while (digitalRead(wakeupPin) == LOW){
   //   delay(80);    // debounce
   // }
-
-  
 }

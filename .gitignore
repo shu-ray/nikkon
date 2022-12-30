@@ -32,3 +32,6 @@
 *.app
 
 .vscode/
+*.svd
+*.cfg
+debug_custom.json
