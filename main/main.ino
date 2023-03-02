@@ -5,6 +5,7 @@
 #include "soc/soc.h"          // Disable brownour problems
 #include "soc/rtc_cntl_reg.h" // Disable brownour problems
 #include "driver/rtc_io.h"
+#include <OneButton.h>
 
 // Pin definition for CAMERA_MODEL_AI_THINKER
 #define PWDN_GPIO_NUM 32
@@ -25,6 +26,7 @@
 #define HREF_GPIO_NUM 23
 #define PCLK_GPIO_NUM 22
 
+#define BUTTON_PIN 12
 char * countPath = "/camSettings/picIndex.txt";
 const byte buttonPin = 12;
 
@@ -161,7 +163,7 @@ class FileCount{
 FileCount Count(countPath);
 
 
-// In honor of jameszah's esp32-cam-video-recorder-junior-60
+// In honor to jameszah's esp32-cam-video-recorder-junior-60
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //
 // Make the avi functions
@@ -618,7 +620,7 @@ static void end_avi() {
 void takeNewPhoto(){
 
   // Path where new picture will be saved in SD Card
-  String path = "/image" + Count.getCount(); + ".jpg";
+  String path = "/image" + Count.getCount() + ".jpg";
   
   // Save picture to microSD card
   fs::FS &fs = SD_MMC;
@@ -649,28 +651,32 @@ void takeNewPhoto(){
 }
 
 
-// the camera require few image capture to calibrate exposure etc
-void camCalibrate(){
+// the camera require few image capture to calibrate exposure, white balance, etc
+void camCalibrate(int duration){
   Serial.println("Calibrating...");
-  byte count = 0;
   unsigned long now = millis();
-  while (now < 6000){
+  while (now <= duration){
     now = millis();
-    if (now % 120 == 0){
-      count++;
+    if (now % 200 == 0){
       camera_fb_t *fb = esp_camera_fb_get();
       if (!fb){
         Serial.println("Cab failed");
         return;
       }
 
-      esp_camera_fb_return(fb);      
-      Serial.print(count);
+      esp_camera_fb_return(fb);
+      Serial.println(".");
     }
     delay(1);
   }
   Serial.println("\nCab done");
 }
+
+OneButton btn = OneButton(
+BUTTON_PIN,  // Input pin for the button
+true,        // Button is active LOW
+true         // Enable internal pull-up resistor
+);
 
 void setup()
 {
@@ -685,28 +691,19 @@ void setup()
   configESPCamera();
   Serial.println("Camera OK!");
 
-  camCalibrate();
-
+  camCalibrate(6000);
 
   // Initialize the MicroSD
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
-  pinMode(buttonPin,INPUT_PULLUP);
+  btn.attachClick(takeNewPhoto);
+  btn.attachLongPressStart(start_avi);
+  btn.attachDuringLongPress(another_save_avi);
+  btn.attachLongPressStop(end_avi);
 }
-
-bool buttonState = HIGH;
-bool lastButtonState = HIGH;
 
 void loop()
 {
-  buttonState = digitalRead(buttonPin);
-  if (buttonState != lastButtonState){
-    if (lastButtonState == HIGH){
-      Serial.println("takin new pic");
-      takeNewPhoto();
-    }
-    lastButtonState = buttonState;
-  }
-  delay(100);
+  btn.tick();
 }
