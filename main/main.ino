@@ -28,7 +28,6 @@
 
 #define BUTTON_PIN 12
 char * countPath = "/camSettings/picIndex.txt";
-const byte buttonPin = 12;
 
 void configESPCamera()
 {
@@ -57,7 +56,7 @@ void configESPCamera()
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG; // Choices are YUV422, GRAYSCALE, RGB565, JPEG
-  config.frame_size = FRAMESIZE_UXGA;   // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
+  config.frame_size = FRAMESIZE_HD;   // FRAMESIZE_ + QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA
   config.jpeg_quality = 10;             // 10-63 lower number means higher quality
   config.fb_count = 2;
 
@@ -72,7 +71,7 @@ void configESPCamera()
   // Camera quality adjustments
   sensor_t *s = esp_camera_sensor_get();
 
-  s->set_framesize(s, FRAMESIZE_UXGA);     // FRAMESIZE_[QQVGA|HQVGA|QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA|QXGA(ov3660)]);
+  s->set_framesize(s, FRAMESIZE_HD);     // FRAMESIZE_[QQVGA|HQVGA|QVGA|CIF|VGA|SVGA|XGA|SXGA|UXGA|QXGA(ov3660)]);
   s->set_quality(s, 8);                   // 10 to 63
   s->set_brightness(s, 0);                 // -2 to 2
   s->set_contrast(s, 0);                   // -2 to 2
@@ -304,6 +303,150 @@ int gfblen;
 int gj;
 int  gmdelay;
 
+TaskHandle_t the_camera_loop_task;
+TaskHandle_t the_sd_loop_task;
+void the_camera_loop (void* pvParameter);
+int first = 1;
+long frame_start = 0;
+long frame_end = 0;
+long frame_total = 0;
+long frame_average = 0;
+long loop_average = 0;
+long loop_total = 0;
+long total_frame_data = 0;
+long last_frame_length = 0;
+int done = 0;
+long avi_start_time = 0;
+long avi_end_time = 0;
+int start_record = 0;
+int start_record_2nd_opinion = -2;
+int start_record_1st_opinion = -1;
+
+int we_are_already_stopped = 0;
+long total_delay = 0;
+long bytes_before_last_100_frames = 0;
+long time_before_last_100_frames = 0;
+
+#define Lots_of_Stats 1
+int quality = 12;
+
+camera_fb_t * fb_curr = NULL;
+camera_fb_t * fb_next = NULL;
+SemaphoreHandle_t baton;
+int framebuffer_len;
+int framebuffer2_len;
+int framebuffer3_len;
+long framebuffer_time = 0;
+long framebuffer2_time = 0;
+long framebuffer3_time = 0;
+uint8_t* framebuffer;
+uint8_t* framebuffer2;
+uint8_t* framebuffer3;
+static SemaphoreHandle_t sd_go;
+#define blinking 0
+bool restart_now = false;
+bool reboot_now = false;
+
+static SemaphoreHandle_t wait_for_sd;
+long current_frame_time;
+long last_frame_time;
+float most_recent_fps = 0;
+int most_recent_avg_framesize = 0;
+
+
+camera_fb_t *  get_good_jpeg() {
+
+  camera_fb_t * fb;
+
+  long start;
+  int failures = 0;
+
+  do {
+    int fblen = 0;
+    int foundffd9 = 0;
+    long bp = millis();
+    long mstart = micros();
+
+    fb = esp_camera_fb_get();
+    if (!fb) {
+      Serial.println("Camera Capture Failed");
+      failures++;
+    } else {
+      long mdelay = micros() - mstart;
+
+      int get_fail = 0;
+
+      totalp = totalp + millis() - bp;
+      time_in_camera = totalp;
+
+      fblen = fb->len;
+
+      for (int j = 1; j <= 1025; j++) {
+        if (fb->buf[fblen - j] != 0xD9) {
+          // no d9, try next for
+        } else {                                     //Serial.println("Found a D9");
+          if (fb->buf[fblen - j - 1] == 0xFF ) {     //Serial.print("Found the FFD9, junk is "); Serial.println(j);
+            if (j == 1) {
+              normal_jpg++;
+            } else {
+              extend_jpg++;
+            }
+            foundffd9 = 1;
+            if (Lots_of_Stats) {
+              if (j > 900) {                             //  rarely happens - sometimes on 2640
+                Serial.print("Frame "); Serial.print(frame_cnt);
+                Serial.print(", Len = "); Serial.print(fblen);
+                //Serial.print(", Correct Len = "); Serial.print(fblen - j + 1);
+                Serial.print(", Extra Bytes = "); Serial.println( j - 1);
+              }
+
+              if ( frame_cnt % 100 == 50) {
+                gframe_cnt = frame_cnt;
+                gfblen = fblen;
+                gj = j;
+                gmdelay = mdelay;
+                //Serial.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
+                //logfile.printf("Frame %6d, len %6d, extra  %4d, cam time %7d ", frame_cnt, fblen, j - 1, mdelay / 1000);
+                do_it_now = 1;
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      if (!foundffd9) {
+        bad_jpg++;
+        Serial.printf("Bad jpeg, Frame %d, Len = %d \n", frame_cnt, fblen);
+        esp_camera_fb_return(fb);
+        failures++;
+
+      } else {
+        break;
+        // count up the useless bytes
+      }
+    }
+
+  } while (failures < 10);   // normally leave the loop with a break()
+
+  // if we get 10 bad frames in a row, then quality parameters are too high - set them lower (+5), and start new movie
+  if (failures == 10) {
+    Serial.printf("10 failures");
+
+    sensor_t * ss = esp_camera_sensor_get();
+    int qual = ss->status.quality ;
+    ss->set_quality(ss, qual + 5);
+    quality = qual + 5;
+    Serial.printf("\n\nDecreasing quality due to frame failures %d -> %d\n\n", qual, qual + 5);
+    delay(1000);
+
+    start_record = 0;
+    //reboot_now = true;
+  }
+  return fb;
+}
+
+
 
 static void start_avi() {
 
@@ -398,7 +541,9 @@ static void start_avi() {
 //           -- pass in a fb pointer to the frame to add
 //
 
-static void another_save_avi(camera_fb_t * fb ) {
+static void another_save_avi(camera_fb_t * fb) {
+
+  camera_fb_t * fb = get_good_jpeg();
 
   long start = millis();
 
@@ -697,13 +842,199 @@ void setup()
   Serial.print("Initializing the MicroSD card module... ");
   initMicroSDCard();
 
+  wait_for_sd = xSemaphoreCreateBinary(); //xSemaphoreCreateMutex();
+  sd_go = xSemaphoreCreateBinary(); //xSemaphoreCreateMutex();
+  baton = xSemaphoreCreateMutex();
+
+
+  xTaskCreatePinnedToCore( the_camera_loop, "the_camera_loop", 3000, NULL, 6, &the_camera_loop_task, 0); // prio 3, core 0 //v56 core 1 as http dominating 0 ... back to 0, raise prio
+  delay(100);
+  xTaskCreatePinnedToCore( the_sd_loop, "the_sd_loop", 2000, NULL, 4, &the_sd_loop_task, 1);  // prio 4, core 1
+
   btn.attachClick(takeNewPhoto);
   btn.attachLongPressStart(start_avi);
-  btn.attachDuringLongPress(another_save_avi);
-  btn.attachLongPressStop(end_avi);
+  btn.attachLongPressStop(end_avi2);
+}
+
+int delete_old_stuff_flag = 0;
+
+void end_avi2(){
+      Serial.println("End the Avi");
+      restart_now = false;
+
+      xSemaphoreTake( wait_for_sd, portMAX_DELAY );
+      esp_camera_fb_return(fb_curr);
+
+      frame_cnt++;
+      fb_curr = fb_next;
+      fb_next = NULL;
+
+      xSemaphoreGive( sd_go );                  // save final frame of movie
+
+      if (blinking)  digitalWrite(33, frame_cnt % 2);
+
+      xSemaphoreTake( wait_for_sd, portMAX_DELAY );    // wait for final frame of movie to be written
+
+      esp_camera_fb_return(fb_curr);
+      fb_curr = NULL;
+
+      end_avi();                                // end the movie
+
+      if (blinking) digitalWrite(33, HIGH);          // light off
+
+      delete_old_stuff_flag = 1;
+      delay(50);
+
+      avi_end_time = millis();
+
+      float fps = 1.0 * frame_cnt / ((avi_end_time - avi_start_time) / 1000) ;
+
+      Serial.printf("End the avi at %d.  It was %d frames, %d ms at %.2f fps...\n", millis(), frame_cnt, avi_end_time, avi_end_time - avi_start_time, fps);
+
+      if (!reboot_now) frame_cnt = 0;             // start recording again on the next loop
+}
+
+void the_camera_loop (void* pvParameter) {
+
+  Serial.print("the camera loop, core ");  Serial.print(xPortGetCoreID());
+  Serial.print(", priority = "); Serial.println(uxTaskPriorityGet(NULL));
+
+  frame_cnt = 0;
+  start_record_2nd_opinion = digitalRead(12);
+  start_record_1st_opinion = digitalRead(12);
+  start_record = 0;
+
+  delay(1000);
+
+  while (1) {
+
+    // if (frame_cnt == 0 && start_record == 0)  // do nothing
+    // if (frame_cnt == 0 && start_record == 1)  // start a movie
+    // if (frame_cnt > 0 && start_record == 0)   // stop the movie
+    // if (frame_cnt > 0 && start_record != 0)   // another frame
+
+    ///////////////////  NOTHING TO DO //////////////////
+    if (frame_cnt == 0 && start_record == 0) {
+
+      // Serial.println("Do nothing");
+      if (we_are_already_stopped == 0) Serial.println("\n\nDisconnect Pin 12 from GND to start recording.\n\n");
+      we_are_already_stopped = 1;
+      delay(100);
+
+      ///////////////////  START A MOVIE  //////////////////
+    } else if (frame_cnt == 0 && start_record == 1) {
+
+      //Serial.println("Ready to start");
+
+      we_are_already_stopped = 0;
+
+      //delete_old_stuff(); // move to loop
+
+      avi_start_time = millis();
+      Serial.printf("\nStart the avi ... at %d\n", avi_start_time);
+      Serial.printf("Framesize %d, quality %d, length %d seconds\n\n", framesize, quality, avi_length);
+
+      frame_cnt++;
+
+      long wait_for_cam_start = millis();
+      fb_curr = get_good_jpeg();                     // should take zero time
+      wait_for_cam += millis() - wait_for_cam_start;
+
+      //start_avi(); will be replaced with semaphore taken when button push
+
+      wait_for_cam_start = millis();
+      fb_next = get_good_jpeg();                    // should take nearly zero time due to time spent writing header
+      //if (framebuffer_time < (millis() - 10)){
+      xSemaphoreTake( baton, portMAX_DELAY );
+      framebuffer_len = fb_next->len;                    // v59.5
+      memcpy(framebuffer, fb_next->buf, fb_next->len);   // v59.5
+      framebuffer_time = millis();                       // v59.5
+      xSemaphoreGive( baton );
+      //}
+      wait_for_cam += millis() - wait_for_cam_start;
+      xSemaphoreGive( sd_go );                     // trigger sd write to write first frame
+
+      if (blinking) digitalWrite(33, frame_cnt % 2);                // blink
+
+      ///////////////////  END THE MOVIE //////////////////
+
+        // moved to end_avi2()
+
+      ///////////////////  ANOTHER FRAME  //////////////////
+    } else if (frame_cnt > 0 && start_record != 0) {  // another frame of the avi
+
+      //Serial.println("Another frame");
+
+      current_frame_time = millis();
+      if (current_frame_time - last_frame_time < frame_interval) {
+        delay(frame_interval - (current_frame_time - last_frame_time));             // delay for timelapse
+      }
+      last_frame_time = millis();
+
+      frame_cnt++;
+
+      long delay_wait_for_sd_start = millis();
+      xSemaphoreTake( wait_for_sd, portMAX_DELAY );             // make sure sd writer is done
+      delay_wait_for_sd += millis() - delay_wait_for_sd_start;
+
+      esp_camera_fb_return(fb_curr);
+
+      fb_curr = fb_next;           // we will write a frame, and get the camera preparing a new one
+
+      xSemaphoreGive( sd_go );             // write the frame in fb_curr
+
+      long wait_for_cam_start = millis();
+      fb_next = get_good_jpeg();               // should take near zero, unless the sd is faster than the camera, when we will have to wait for the camera
+      //if (framebuffer_time < (millis() - 10)){
+      xSemaphoreTake( baton, portMAX_DELAY );
+      framebuffer_len = fb_next->len;                    // v59.5
+      memcpy(framebuffer, fb_next->buf, fb_next->len);   // v59.5
+      framebuffer_time = millis();                       // v59.5
+      xSemaphoreGive( baton );
+      //}
+      wait_for_cam += millis() - wait_for_cam_start;
+
+      if (blinking) digitalWrite(33, frame_cnt % 2);
+
+      if (frame_cnt % 100 == 10 ) {     // print some status every 100 frames
+        if (frame_cnt == 10) {
+          bytes_before_last_100_frames = movi_size;
+          time_before_last_100_frames = millis();
+          most_recent_fps = 0;
+          most_recent_avg_framesize = 0;
+        } else {
+
+          most_recent_fps = 100.0 / ((millis() - time_before_last_100_frames) / 1000.0) ;
+          most_recent_avg_framesize = (movi_size - bytes_before_last_100_frames) / 100;
+
+          if (Lots_of_Stats && frame_cnt < 1011) {
+            Serial.printf("So far: %04d frames, in %6.1f seconds, for last 100 frames: avg frame size %6.1f kb, %.2f fps ...\n", frame_cnt, 0.001 * (millis() - avi_start_time), 1.0 / 1024  * most_recent_avg_framesize, most_recent_fps);
+          }
+
+          total_delay = 0;
+
+          bytes_before_last_100_frames = movi_size;
+          time_before_last_100_frames = millis();
+        }
+      }
+    }
+  }
+}
+
+void the_sd_loop (void* pvParameter) {
+
+  Serial.print("the_sd_loop, core ");  Serial.print(xPortGetCoreID());
+  Serial.print(", priority = "); Serial.println(uxTaskPriorityGet(NULL));
+
+  while (1) {
+    xSemaphoreTake( sd_go, portMAX_DELAY );            // we wait for camera loop to tell us to go
+    another_save_avi(fb_curr);                        // do the actual sd wrte
+    xSemaphoreGive( wait_for_sd );                     // tell camera loop we are done
+  }
 }
 
 void loop()
 {
   btn.tick();
+  delay(1);
 }
